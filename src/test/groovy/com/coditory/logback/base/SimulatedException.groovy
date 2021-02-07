@@ -1,4 +1,4 @@
-package com.coditory.commons.base
+package com.coditory.logback.base
 
 class SimulatedException extends RuntimeException {
     SimulatedException() {

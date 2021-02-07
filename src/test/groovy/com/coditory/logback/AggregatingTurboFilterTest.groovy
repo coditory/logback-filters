@@ -19,8 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.regex.Matcher
 
 class AggregatingTurboFilterTest extends Specification {
-    Logger aggregatedLogger = getLogger("aggregated-logger")
-    Logger notAggregatedLogger = getLogger("not-aggregated-logger")
+    Logger aggregatedLogger = (Logger) LoggerFactory.getLogger("aggregated-logger")
     AggregatingTurboFilter filter = createFilter(aggregatedLogger.name)
     List<LoggingEvent> capturedEvents = []
     Appender appender = Mock(Appender) {
@@ -31,14 +30,16 @@ class AggregatingTurboFilterTest extends Specification {
         aggregatedLogger.addAppender(appender)
     }
 
-    def "should pass through messages from loggers without aggregation enabled"() {
+    def "should pass through logs without when AggregatingTurboFilter is disabled"() {
+        given:
+            Logger notAggregatedLogger = (Logger) LoggerFactory.getLogger("not-aggregated-logger")
         when:
             FilterReply reply = filter.decide(null, notAggregatedLogger, Level.ERROR, "Some problem", null, null)
         then:
             reply == FilterReply.NEUTRAL
     }
 
-    def "should report aggregated messages for configured logger"() {
+    def "should report aggregated logs for configured logger"() {
         given:
             AggregatingTurboFilter filter = createStartedFilter(aggregatedLogger.name, 50)
             BlockingVariable<Boolean> appenderCalled = new BlockingVariable<Boolean>(200, TimeUnit.MILLISECONDS)
@@ -66,7 +67,7 @@ class AggregatingTurboFilterTest extends Specification {
             filter.stop()
     }
 
-    def "should report aggregated messages grouping by params"() {
+    def "should report aggregated logs grouped by params"() {
         when:
             5.times {
                 filter.decide(null, aggregatedLogger, Level.ERROR, "Hello {}", (Object[]) ["James"], null)
@@ -101,6 +102,53 @@ class AggregatingTurboFilterTest extends Specification {
             capturedEvents.count { it.message == "Some problem [occurrences=1]" } == 2
             capturedEvents.count { it.level == Level.WARN } == 1
             capturedEvents.count { it.level == Level.ERROR } == 1
+    }
+
+    def "should group logs by template and log with last parameters"() {
+        given:
+            filter.setAggregationKey("template")
+        when:
+            5.times {
+                filter.decide(null, aggregatedLogger, Level.ERROR, "Hello {}", (Object[]) ["James"], null)
+            }
+            2.times {
+                filter.decide(null, aggregatedLogger, Level.ERROR, "Hello {}", (Object[]) ["Mary"], null)
+            }
+
+        and:
+            filter.report()
+
+        then:
+            capturedEvents.size() == 1
+            capturedEvents.count {
+                it.message == "Hello {} [occurrences=7]" && it.argumentArray[0] == "Mary"
+            } == 1
+    }
+
+    def "should group logs by template and use last exception with matching params"() {
+        given:
+            filter.setAggregationKey("template")
+        when:
+            filter.decide(null, aggregatedLogger, Level.ERROR, "Some problem", (Object[]) [new RuntimeException("problem!")], null)
+            filter.decide(null, aggregatedLogger, Level.ERROR, "Some problem", (Object[]) [new RuntimeException("another problem!")], null)
+            filter.decide(null, aggregatedLogger, Level.ERROR, "An error caused by {}", (Object[]) ["James1", new RuntimeException("abort 1!")], null)
+            filter.decide(null, aggregatedLogger, Level.ERROR, "An error caused by {}", (Object[]) ["James2"], new RuntimeException("abort 2!"))
+            filter.decide(null, aggregatedLogger, Level.ERROR, "An error caused by {}", (Object[]) ["James3"], null)
+
+        and:
+            filter.report()
+
+        then:
+            capturedEvents.size() == 2
+            capturedEvents.count {
+                it.message == "Some problem [occurrences=2]" && it.argumentArray.size() == 0 &&
+                        it.throwableProxy.message == "another problem!"
+            } == 1
+            capturedEvents.count {
+                it.message == "An error caused by {} [occurrences=3]" &&
+                        it.argumentArray[0] == "James2" && it.throwableProxy.message == "abort 2!"
+            } == 1
+
     }
 
     def "should group logs by marker"() {
@@ -153,7 +201,7 @@ class AggregatingTurboFilterTest extends Specification {
             }
     }
 
-    def "should not report when there are no more logs"() {
+    def "should not report when there are no logs"() {
         when:
             filter.decide(null, aggregatedLogger, Level.ERROR, "Some problem", null, null)
 
@@ -173,7 +221,7 @@ class AggregatingTurboFilterTest extends Specification {
             0 * appender.doAppend(_)
     }
 
-    def "should group by message and use last exception"() {
+    def "should group logs by full message and use last exception"() {
         when:
             filter.decide(null, aggregatedLogger, Level.ERROR, "Some problem", (Object[]) [new RuntimeException("problem!")], null)
             filter.decide(null, aggregatedLogger, Level.ERROR, "Some problem", (Object[]) [new RuntimeException("another problem!")], null)
@@ -291,9 +339,5 @@ class AggregatingTurboFilterTest extends Specification {
         filter.reportingIntervalMillis = reportingInterval
         filter.start()
         return filter
-    }
-
-    Logger getLogger(String name) {
-        return (Logger) LoggerFactory.getLogger(name)
     }
 }

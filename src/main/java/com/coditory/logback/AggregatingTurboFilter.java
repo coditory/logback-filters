@@ -13,7 +13,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -53,6 +52,7 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 public class AggregatingTurboFilter extends TurboFilter {
     static final Marker MARKER = MarkerFactory.getMarker("AggregatingTurboFilterMarker");
     private ScheduledExecutorService executorService;
+    private String aggregationKey = "message";
     private final Map<Logger, LoggerAggregates> logAggregates = new ConcurrentHashMap<>();
     private final List<String> aggregatedLogger = new ArrayList<>();
     private long reportingIntervalMillis = 10_000;
@@ -95,48 +95,50 @@ public class AggregatingTurboFilter extends TurboFilter {
                 Logger.FQCN,
                 key.level,
                 key.message + " [occurrences=" + summary.logsCount + "]",
-                key.params,
+                summary.lastParams,
                 summary.lastException
         );
     }
 
     @Override
     public FilterReply decide(Marker marker, Logger logger, Level level, String message, Object[] params, Throwable ex) {
-        if (isAggregatedLog(marker)) { // prevent recursion for aggregated logger events
+        if (isNeutral(marker, logger, level, message)) {
             return FilterReply.NEUTRAL;
         }
-        if (!aggregatedLogger.contains(logger.getName())) {
-            return FilterReply.NEUTRAL;
-        }
-
-        if (ex == null) {
-            Optional<Throwable> throwable = extractLastParamThrowable(params);
-            if (throwable.isPresent()) {
-                ex = throwable.get();
-                params = Arrays.copyOfRange(params, 0, params.length - 1);
-            }
-        }
-        Throwable exception = ex;
-
-        LoggingEventKey loggingEventKey = new LoggingEventKey(message, params, level, getEnrichedMarker(marker));
+        Throwable exception = ex != null ? ex : extractLastThrowableParam(params);
+        Object[] parameters = ex == null && exception != null
+                ? Arrays.copyOfRange(params, 0, params.length - 1)
+                : params;
+        boolean compareParams = !"template".equalsIgnoreCase(aggregationKey);
+        LoggingEventKey loggingEventKey = new LoggingEventKey(message, parameters, level, getEnrichedMarker(marker), compareParams);
         logAggregates.computeIfAbsent(logger, l -> new LoggerAggregates())
-                .aggregates.merge(loggingEventKey, new AggregateSummary(ex),
-                (currentAggregate, emptyAggregate) -> AggregateSummary.incrementCount(currentAggregate, exception));
+                .aggregates.merge(
+                loggingEventKey,
+                new AggregateSummary(ex, parameters),
+                (currentAggregate, emptyAggregate) -> currentAggregate.aggregate(exception, parameters)
+        );
 
         return FilterReply.DENY;
     }
 
-    private boolean isAggregatedLog(Marker marker) {
-        return marker != null && (marker.equals(MARKER) || marker.contains(MARKER));
+    private Throwable extractLastThrowableParam(Object[] params) {
+        Object last = params == null || params.length == 0
+                ? null
+                : params[params.length - 1];
+        return last instanceof Throwable
+                ? (Throwable) last
+                : null;
+
     }
 
-    private Optional<Throwable> extractLastParamThrowable(Object[] params) {
-        return Optional.ofNullable(params)
-                .map(Arrays::stream)
-                .flatMap(a -> a.skip(params.length - 1)
-                        .findFirst()
-                        .filter(o -> o instanceof Throwable)
-                        .map(Throwable.class::cast));
+    private boolean isNeutral(Marker marker, Logger logger, Level level, String message) {
+        return (logger == null || level == null || message == null) ||
+                isAggregatedLog(marker) ||
+                !aggregatedLogger.contains(logger.getName());
+    }
+
+    private boolean isAggregatedLog(Marker marker) {
+        return marker != null && (marker.equals(MARKER) || marker.contains(MARKER));
     }
 
     private Marker getEnrichedMarker(Marker marker) {
@@ -159,43 +161,58 @@ public class AggregatingTurboFilter extends TurboFilter {
         this.reportingIntervalMillis = reportingIntervalMillis;
     }
 
+    public String getAggregationKey() {
+        return aggregationKey;
+    }
+
+    public void setAggregationKey(String aggregationKey) {
+        this.aggregationKey = aggregationKey;
+    }
+
     private static class LoggerAggregates {
 
         private final Map<LoggingEventKey, AggregateSummary> aggregates = new ConcurrentHashMap<>();
     }
 
     private static class AggregateSummary {
-
         private final int logsCount;
         private final Throwable lastException;
+        private final Object[] lastParams;
 
-        private AggregateSummary(Throwable lastException) {
-            this(1, lastException);
+        private AggregateSummary(Throwable lastException, Object[] lastParams) {
+            this(1, lastException, lastParams);
         }
 
-        private AggregateSummary(int logsCount, Throwable lastException) {
+        private AggregateSummary(int logsCount, Throwable lastException, Object[] lastParams) {
             this.logsCount = logsCount;
             this.lastException = lastException;
+            this.lastParams = lastParams;
         }
 
-        private static AggregateSummary incrementCount(AggregateSummary currentAggregate, Throwable lastException) {
-            return new AggregateSummary(currentAggregate.logsCount + 1,
-                    Optional.ofNullable(lastException).orElse(currentAggregate.lastException));
+        private AggregateSummary aggregate(Throwable lastException, Object[] lastParams) {
+            Throwable exception = lastException != null
+                    ? lastException
+                    : this.lastException;
+            Object[] params = lastException != null || this.lastException == null
+                    ? lastParams
+                    : this.lastParams;
+            return new AggregateSummary(this.logsCount + 1, exception, params);
         }
     }
 
     private static class LoggingEventKey {
-
         private final String message;
         private final int level;
         private final Marker marker;
         private final Object[] params;
+        private final boolean compareParams;
 
-        LoggingEventKey(String message, Object[] params, Level level, Marker marker) {
+        LoggingEventKey(String message, Object[] params, Level level, Marker marker, boolean compareParams) {
             this.message = message;
             this.params = params;
             this.level = Level.toLocationAwareLoggerInteger(level);
             this.marker = marker;
+            this.compareParams = compareParams;
         }
 
         @Override
@@ -206,13 +223,15 @@ public class AggregatingTurboFilter extends TurboFilter {
             return level == that.level &&
                     Objects.equals(message, that.message) &&
                     Objects.equals(marker, that.marker) &&
-                    Arrays.equals(params, that.params);
+                    (!compareParams || Arrays.equals(params, that.params));
         }
 
         @Override
         public int hashCode() {
             int result = Objects.hash(message, level, marker);
-            result = 31 * result + Arrays.hashCode(params);
+            if (compareParams) {
+                result = 31 * result + Arrays.hashCode(params);
+            }
             return result;
         }
     }
