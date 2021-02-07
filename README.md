@@ -39,7 +39,6 @@ Filter drawbacks:
 Sample configuration:
 
 ```xml
-
 <configuration>
     <turboFilter class="com.coditory.logback.AggregatingTurboFilter">
         <reportingIntervalMillis>3000</reportingIntervalMillis>
@@ -48,7 +47,7 @@ Sample configuration:
 
     <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{10} - %msg%n</pattern>
         </encoder>
     </appender>
 
@@ -66,7 +65,6 @@ To aggregate over 3s logs from `com.coditory.sandbox.SomeClass` by log message (
 configuration:
 
 ```xml
-
 <turboFilter class="com.coditory.logback.AggregatingTurboFilter">
     <reportingIntervalMillis>3000</reportingIntervalMillis>
     <aggregatedLogger>com.coditory.sandbox.Sandbox</aggregatedLogger>
@@ -76,7 +74,6 @@ configuration:
 Example:
 
 ```java
-
 @Slf4j
 class Sandbox {
     public static void main(String[] args) throws InterruptedException {
@@ -90,11 +87,11 @@ class Sandbox {
     }
 }
 // Output:
-// 16:50:39.632 [aggregating-filter-0-thread-0] INFO  com.coditory.sandbox.Sandbox - Hello Mary [occurrences=3]
+// 16:50:39.632 [aggregating-filter-0-thread-0] INFO c.c.s.Sandbox - Hello Mary [occurrences=3]
 // java.lang.RuntimeException: error
 //   at com.coditory.sandbox.Sandbox.main(Sandbox.java:14)
-// 16:50:39.638 [aggregating-filter-0-thread-0] INFO  com.coditory.sandbox.Sandbox - Hello James [occurrences=2]
-// 16:50:39.638 [aggregating-filter-0-thread-0] INFO  com.coditory.sandbox.Sandbox - Hello Harry [occurrences=1]
+// 16:50:39.638 [aggregating-filter-0-thread-0] INFO c.c.s.Sandbox - Hello James [occurrences=2]
+// 16:50:39.638 [aggregating-filter-0-thread-0] INFO c.c.s.Sandbox - Hello Harry [occurrences=1]
 ```
 
 ## Aggregate by log template
@@ -102,7 +99,6 @@ class Sandbox {
 To aggregate logs from `com.coditory.sandbox.SomeClass` by log message template (without resolved parameters):
 
 ```xml
-
 <turboFilter class="com.coditory.logback.AggregatingTurboFilter">
     <aggregationKey>template</aggregationKey>
     <aggregatedLogger>com.coditory.sandbox.SomeClass</aggregatedLogger>
@@ -111,7 +107,7 @@ To aggregate logs from `com.coditory.sandbox.SomeClass` by log message template 
 
 Example:
 
-```
+```java
 @Slf4j
 class Sandbox {
   public static void main(String[] args) throws InterruptedException {
@@ -125,7 +121,7 @@ class Sandbox {
   }
 }
 // Output:
-// 16:49:50.244 [aggregating-filter-0-thread-0] INFO  com.coditory.sandbox.Sandbox - Hello Mary [occurrences=6]
+// 16:49:50.244 [aggregating-filter-0-thread-0] INFO c.c.s.Sandbox - Hello Mary [occurrences=6]
 // java.lang.RuntimeException: error
 //    at com.coditory.sandbox.Sandbox.main(Sandbox.java:11)
 ```
@@ -136,7 +132,6 @@ To aggregate logs from `com.coditory.sandbox.SomeClass` with message containing 
 configuration:
 
 ```xml
-
 <turboFilter class="com.coditory.logback.AggregatingTurboFilter">
     <reportingIntervalMillis>3000</reportingIntervalMillis>
     <aggregationMessageToken>[aggregate]</aggregationMessageToken>
@@ -146,7 +141,7 @@ configuration:
 
 Example:
 
-```
+```java
 @Slf4j
 class Sandbox {
   public static void main(String[] args) throws InterruptedException {
@@ -160,8 +155,8 @@ class Sandbox {
   }
 }
 // Output:
-// 16:48:39.281 [main] INFO  com.coditory.sandbox.Sandbox - Hello James
-// 16:48:39.284 [main] INFO  com.coditory.sandbox.Sandbox - Hello Mary
-// 16:48:39.285 [main] INFO  com.coditory.sandbox.Sandbox - Hello Mary
-// 16:48:42.248 [aggregating-filter-0-thread-0] INFO  com.coditory.sandbox.Sandbox - Hello Mary [occurrences=3]
+// 16:48:39.281 [main] INFO c.c.s.Sandbox - Hello James
+// 16:48:39.284 [main] INFO c.c.s.Sandbox - Hello Mary
+// 16:48:39.285 [main] INFO c.c.s.Sandbox - Hello Mary
+// 16:48:42.248 [aggregating-filter-0-thread-0] INFO c.c.s.Sandbox - Hello Mary [occurrences=3]
 ```
