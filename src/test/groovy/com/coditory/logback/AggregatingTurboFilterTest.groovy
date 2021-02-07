@@ -39,6 +39,29 @@ class AggregatingTurboFilterTest extends Specification {
             reply == FilterReply.NEUTRAL
     }
 
+    def "should activate log aggregation on message token"() {
+        given:
+            Logger notAggregatedLogger = (Logger) LoggerFactory.getLogger("not-aggregated-logger")
+            notAggregatedLogger.addAppender(appender)
+            filter.setAggregationMessageToken("[aggregate]")
+        when:
+            5.times {
+                filter.decide(null, notAggregatedLogger, Level.INFO, "Hello {}", (Object[]) ["James"], null)
+            }
+            2.times {
+                filter.decide(null, notAggregatedLogger, Level.INFO, "[aggregate] Hello {}", (Object[]) ["Mary"], null)
+            }
+
+        and:
+            filter.report()
+
+        then:
+            capturedEvents.size() == 1
+            capturedEvents.count {
+                it.message == "Hello {} [occurrences=2]" && it.argumentArray[0] == "Mary"
+            } == 1
+    }
+
     def "should report aggregated logs for configured logger"() {
         given:
             AggregatingTurboFilter filter = createStartedFilter(aggregatedLogger.name, 50)

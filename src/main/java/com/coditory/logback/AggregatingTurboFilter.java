@@ -53,6 +53,7 @@ public class AggregatingTurboFilter extends TurboFilter {
     static final Marker MARKER = MarkerFactory.getMarker("AggregatingTurboFilterMarker");
     private ScheduledExecutorService executorService;
     private String aggregationKey = "message";
+    private String aggregationMessageToken = null;
     private final Map<Logger, LoggerAggregates> logAggregates = new ConcurrentHashMap<>();
     private final List<String> aggregatedLogger = new ArrayList<>();
     private long reportingIntervalMillis = 10_000;
@@ -101,23 +102,27 @@ public class AggregatingTurboFilter extends TurboFilter {
     }
 
     @Override
-    public FilterReply decide(Marker marker, Logger logger, Level level, String message, Object[] params, Throwable ex) {
-        if (isNeutral(marker, logger, level, message)) {
+    public FilterReply decide(Marker marker, Logger logger, Level level, String logMessage, Object[] logParams, Throwable logException) {
+        if (isNeutral(marker, logger, level, logMessage)) {
             return FilterReply.NEUTRAL;
         }
-        Throwable exception = ex != null ? ex : extractLastThrowableParam(params);
-        Object[] parameters = ex == null && exception != null
-                ? Arrays.copyOfRange(params, 0, params.length - 1)
-                : params;
+        String message = hasAggregationToken(logMessage)
+                ? removeAggregationToken(logMessage)
+                : logMessage;
+        Throwable exception = logException != null
+                ? logException
+                : extractLastThrowableParam(logParams);
+        Object[] parameters = logException == null && exception != null
+                ? Arrays.copyOfRange(logParams, 0, logParams.length - 1)
+                : logParams;
         boolean compareParams = !"template".equalsIgnoreCase(aggregationKey);
         LoggingEventKey loggingEventKey = new LoggingEventKey(message, parameters, level, getEnrichedMarker(marker), compareParams);
         logAggregates.computeIfAbsent(logger, l -> new LoggerAggregates())
                 .aggregates.merge(
                 loggingEventKey,
-                new AggregateSummary(ex, parameters),
+                new AggregateSummary(logException, parameters),
                 (currentAggregate, emptyAggregate) -> currentAggregate.aggregate(exception, parameters)
         );
-
         return FilterReply.DENY;
     }
 
@@ -132,13 +137,28 @@ public class AggregatingTurboFilter extends TurboFilter {
     }
 
     private boolean isNeutral(Marker marker, Logger logger, Level level, String message) {
-        return (logger == null || level == null || message == null) ||
-                isAggregatedLog(marker) ||
-                !aggregatedLogger.contains(logger.getName());
+        return (logger == null || level == null || message == null)
+                || isAggregatedLog(marker)
+                || (!aggregatedLogger.contains(logger.getName()) && !hasAggregationToken(message));
+    }
+
+    private boolean hasAggregationToken(String message) {
+        return aggregationMessageToken != null
+                && !aggregationMessageToken.isEmpty()
+                && message.contains(aggregationMessageToken);
+    }
+
+    private String removeAggregationToken(String message) {
+        String withoutToken = message.replace(aggregationMessageToken, "");
+        return message.startsWith(aggregationMessageToken) || message.endsWith(aggregationMessageToken)
+                ? withoutToken.trim()
+                : withoutToken;
     }
 
     private boolean isAggregatedLog(Marker marker) {
-        return marker != null && (marker.equals(MARKER) || marker.contains(MARKER));
+        return marker != null
+                && (marker.equals(MARKER)
+                || marker.contains(MARKER));
     }
 
     private Marker getEnrichedMarker(Marker marker) {
@@ -167,6 +187,14 @@ public class AggregatingTurboFilter extends TurboFilter {
 
     public void setAggregationKey(String aggregationKey) {
         this.aggregationKey = aggregationKey;
+    }
+
+    public String getAggregationMessageToken() {
+        return aggregationMessageToken;
+    }
+
+    public void setAggregationMessageToken(String aggregationMessageToken) {
+        this.aggregationMessageToken = aggregationMessageToken;
     }
 
     private static class LoggerAggregates {

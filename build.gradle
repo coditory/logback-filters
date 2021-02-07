@@ -2,14 +2,22 @@ plugins {
     id 'java-library'
     id 'groovy'
     id 'jacoco'
-    id 'signing'
+    id 'maven-publish'
     id 'com.github.kt3k.coveralls' version '2.10.2'
     id 'com.coditory.build' version '0.1.11'
     id 'io.codearte.nexus-staging' version '0.22.0' apply false
     id 'de.marcphilipp.nexus-publish' version '0.4.0' apply false
 }
 
-group = 'com.coditory.common'
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+        }
+    }
+}
+
+group = 'com.coditory.logback'
 description = 'Coditory Logback Filters'
 
 dependencies {
@@ -17,6 +25,6 @@ dependencies {
     testImplementation 'org.spockframework:spock-core:2.0-M3-groovy-3.0'
 }
 
-if (project.hasProperty('publish')) {
+if (project.hasProperty('publishToNexus')) {
     apply from: "gradle/publish.gradle"
 }
