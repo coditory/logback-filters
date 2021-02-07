@@ -2,39 +2,34 @@ package com.coditory.logback
 
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
-import ch.qos.logback.classic.spi.LoggingEvent
-import ch.qos.logback.core.Appender
 import ch.qos.logback.core.spi.FilterReply
+import com.coditory.logback.base.CapturingAppender
 import org.slf4j.LoggerFactory
 import org.slf4j.Marker
 import org.slf4j.MarkerFactory
+import spock.lang.Retry
 import spock.lang.Specification
-import spock.util.concurrent.BlockingVariable
 
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.regex.Matcher
 
 class AggregatingTurboFilterTest extends Specification {
     Logger aggregatedLogger = (Logger) LoggerFactory.getLogger("aggregated-logger")
     AggregatingTurboFilter filter = createFilter(aggregatedLogger.name)
-    List<LoggingEvent> capturedEvents = []
-    Appender appender = Mock(Appender) {
-        doAppend(_) >> { LoggingEvent event -> capturedEvents << event }
-    }
+    CapturingAppender appender = new CapturingAppender()
 
     void setup() {
         aggregatedLogger.addAppender(appender)
     }
 
-    def "should pass through logs without when AggregatingTurboFilter is disabled"() {
+    def "should pass through logs that do not use aggregation"() {
         given:
             Logger notAggregatedLogger = (Logger) LoggerFactory.getLogger("not-aggregated-logger")
+            notAggregatedLogger.addAppender(appender)
         when:
-            FilterReply reply = filter.decide(null, notAggregatedLogger, Level.ERROR, "Some problem", null, null)
+            FilterReply reply = filterLog(notAggregatedLogger, Level.ERROR, "Some problem")
         then:
             reply == FilterReply.NEUTRAL
     }
@@ -43,34 +38,42 @@ class AggregatingTurboFilterTest extends Specification {
         given:
             Logger notAggregatedLogger = (Logger) LoggerFactory.getLogger("not-aggregated-logger")
             notAggregatedLogger.addAppender(appender)
+            filter.addAggregatedLogger(notAggregatedLogger.name)
             filter.setAggregationMessageToken("[aggregate]")
         when:
-            5.times {
-                filter.decide(null, notAggregatedLogger, Level.INFO, "Hello {}", (Object[]) ["James"], null)
-            }
-            2.times {
-                filter.decide(null, notAggregatedLogger, Level.INFO, "[aggregate] Hello {}", (Object[]) ["Mary"], null)
-            }
+            5.times { filterLog(notAggregatedLogger, Level.INFO, "Hello {}", ["James"]) }
+            2.times { filterLog(notAggregatedLogger, Level.INFO, "[aggregate] Hello {}", ["Mary"]) }
 
         and:
             filter.report()
 
         then:
-            capturedEvents.size() == 1
-            capturedEvents.count {
-                it.message == "Hello {} [occurrences=2]" && it.argumentArray[0] == "Mary"
-            } == 1
+            appender.capturedEvents() == 1
+            appender.countCapturedEvents("Hello {} [occurrences=2]", ["Mary"]) == 1
     }
 
+    def "should activate log aggregation on message token from unregistered logger"() {
+        given:
+            Logger notAggregatedLogger = (Logger) LoggerFactory.getLogger("not-aggregated-logger")
+            notAggregatedLogger.addAppender(appender)
+            filter.setAggregationMessageToken("[aggregate]")
+        when:
+            5.times { filterLog(notAggregatedLogger, Level.INFO, "Hello {}", ["James"]) }
+            2.times { filterLog(notAggregatedLogger, Level.INFO, "[aggregate] Hello {}", ["Mary"]) }
+
+        and:
+            filter.report()
+
+        then:
+            appender.capturedEvents() == 0
+    }
+
+    @Retry
     def "should report aggregated logs for configured logger"() {
         given:
+            Logger aggregatedLogger = (Logger) LoggerFactory.getLogger("another-aggregated-logger")
+            CapturingAppender appender = new CapturingAppender()
             AggregatingTurboFilter filter = createStartedFilter(aggregatedLogger.name, 50)
-            BlockingVariable<Boolean> appenderCalled = new BlockingVariable<Boolean>(200, TimeUnit.MILLISECONDS)
-            LoggingEvent capturedEvent = null
-            Appender appender = [doAppend: { event ->
-                capturedEvent = event
-                appenderCalled.set(true)
-            }] as Appender
             aggregatedLogger.addAppender(appender)
 
         when:
@@ -82,9 +85,9 @@ class AggregatingTurboFilterTest extends Specification {
             reply2 == FilterReply.DENY
 
         and: "later an aggregate is logged asynchronously by another thread"
-            appenderCalled.get()
-            capturedEvent.level == Level.ERROR
-            capturedEvent.message == "Some problem [occurrences=2]"
+            appender.waitForFirstLog()
+            appender.capturedEvents() == 1
+            appender.countCapturedEvents(Level.ERROR, "Some problem [occurrences=2]") == 1
 
         cleanup:
             filter.stop()
@@ -92,86 +95,65 @@ class AggregatingTurboFilterTest extends Specification {
 
     def "should report aggregated logs grouped by params"() {
         when:
-            5.times {
-                filter.decide(null, aggregatedLogger, Level.ERROR, "Hello {}", (Object[]) ["James"], null)
-            }
-            2.times {
-                filter.decide(null, aggregatedLogger, Level.ERROR, "Hello {}", (Object[]) ["Mary"], null)
-            }
+            5.times { filterLog(Level.ERROR, "Hello {}", ["James"]) }
+            2.times { filterLog(Level.ERROR, "Hello {}", ["Mary"]) }
 
         and:
             filter.report()
 
         then:
-            capturedEvents.size() == 2
-            capturedEvents.count {
-                it.message == "Hello {} [occurrences=5]" && it.argumentArray[0] == "James"
-            } == 1
-            capturedEvents.count {
-                it.message == "Hello {} [occurrences=2]" && it.argumentArray[0] == "Mary"
-            } == 1
+            appender.capturedEvents() == 2
+            appender.countCapturedEvents("Hello {} [occurrences=5]", ["James"]) == 1
+            appender.countCapturedEvents("Hello {} [occurrences=2]", ["Mary"]) == 1
     }
 
     def "should group logs by log level"() {
         when:
-            filter.decide(null, aggregatedLogger, Level.WARN, "Some problem", null, null)
-            filter.decide(null, aggregatedLogger, Level.ERROR, "Some problem", null, null)
+            filterLog(Level.WARN, "Some problem")
+            filterLog(Level.ERROR, "Some problem")
 
         and:
             filter.report()
 
         then:
-            capturedEvents.size() == 2
-            capturedEvents.count { it.message == "Some problem [occurrences=1]" } == 2
-            capturedEvents.count { it.level == Level.WARN } == 1
-            capturedEvents.count { it.level == Level.ERROR } == 1
+            appender.capturedEvents() == 2
+            appender.countCapturedEvents("Some problem [occurrences=1]") == 2
+            appender.countCapturedEvents(Level.WARN) == 1
+            appender.countCapturedEvents(Level.ERROR) == 1
     }
 
     def "should group logs by template and log with last parameters"() {
         given:
             filter.setAggregationKey("template")
         when:
-            5.times {
-                filter.decide(null, aggregatedLogger, Level.ERROR, "Hello {}", (Object[]) ["James"], null)
-            }
-            2.times {
-                filter.decide(null, aggregatedLogger, Level.ERROR, "Hello {}", (Object[]) ["Mary"], null)
-            }
+            5.times { filterLog(Level.ERROR, "Hello {}", ["James"]) }
+            2.times { filterLog(Level.ERROR, "Hello {}", ["Mary"]) }
 
         and:
             filter.report()
 
         then:
-            capturedEvents.size() == 1
-            capturedEvents.count {
-                it.message == "Hello {} [occurrences=7]" && it.argumentArray[0] == "Mary"
-            } == 1
+            appender.capturedEvents() == 1
+            appender.countCapturedEvents("Hello {} [occurrences=7]", ["Mary"]) == 1
     }
 
     def "should group logs by template and use last exception with matching params"() {
         given:
             filter.setAggregationKey("template")
         when:
-            filter.decide(null, aggregatedLogger, Level.ERROR, "Some problem", (Object[]) [new RuntimeException("problem!")], null)
-            filter.decide(null, aggregatedLogger, Level.ERROR, "Some problem", (Object[]) [new RuntimeException("another problem!")], null)
-            filter.decide(null, aggregatedLogger, Level.ERROR, "An error caused by {}", (Object[]) ["James1", new RuntimeException("abort 1!")], null)
-            filter.decide(null, aggregatedLogger, Level.ERROR, "An error caused by {}", (Object[]) ["James2"], new RuntimeException("abort 2!"))
-            filter.decide(null, aggregatedLogger, Level.ERROR, "An error caused by {}", (Object[]) ["James3"], null)
+            filterLog(Level.ERROR, "Some problem", [new RuntimeException("problem!")])
+            filterLog(Level.ERROR, "Some problem", [new RuntimeException("another problem!")])
+            filterLog(Level.ERROR, "An error caused by {}", ["James1", new RuntimeException("abort 1!")])
+            filterLog(Level.ERROR, "An error caused by {}", ["James2"], new RuntimeException("abort 2!"))
+            filterLog(Level.ERROR, "An error caused by {}", ["James3"])
 
         and:
             filter.report()
 
         then:
-            capturedEvents.size() == 2
-            capturedEvents.count {
-                it.message == "Some problem [occurrences=2]" && it.argumentArray.size() == 0 &&
-                        it.throwableProxy.message == "another problem!"
-            } == 1
-            capturedEvents.count {
-                it.message == "An error caused by {} [occurrences=3]" &&
-                        it.argumentArray[0] == "James2" && it.throwableProxy.message == "abort 2!"
-            } == 1
-
+            appender.capturedEvents() == 2
+            appender.countCapturedEvents("Some problem [occurrences=2]", [], "another problem!") == 1
+            appender.countCapturedEvents("An error caused by {} [occurrences=3]", ["James2"], "abort 2!") == 1
     }
 
     def "should group logs by marker"() {
@@ -186,86 +168,72 @@ class AggregatingTurboFilterTest extends Specification {
             filter.report()
 
         then:
-            capturedEvents.size() == 2
-            capturedEvents.count { it.message == "Some problem [occurrences=1]" } == 2
-            capturedEvents.count { it.marker == myMarker } == 1
-            capturedEvents.count { it.marker == AggregatingTurboFilter.MARKER } == 1
+            appender.capturedEvents() == 2
+            appender.countCapturedEvents("Some problem [occurrences=1]") == 2
+            appender.countCapturedEvents(myMarker) == 1
+            appender.countCapturedEvents(AggregatingTurboFilter.MARKER) == 1
     }
 
     def "should log last exception"() {
         when:
-            filter.decide(null, aggregatedLogger, Level.ERROR, "Some problem", null, new RuntimeException("forgotten exception"))
-            filter.decide(null, aggregatedLogger, Level.ERROR, "Some problem", null, new RuntimeException("saved exception"))
-            filter.decide(null, aggregatedLogger, Level.ERROR, "Some problem", null, null)
+            filterLog(Level.ERROR, "Some problem", null, new RuntimeException("forgotten exception"))
+            filterLog(Level.ERROR, "Some problem", null, new RuntimeException("saved exception"))
+            filterLog(Level.ERROR, "Some problem")
 
         and:
             filter.report()
 
         then:
-            1 * appender.doAppend(_) >> { LoggingEvent event ->
-                assert event.level == Level.ERROR
-                assert event.message == "Some problem [occurrences=3]"
-                assert event.throwableProxy.message == "saved exception"
-            }
+            appender.capturedEvents() == 1
+            appender.countCapturedEvents(Level.ERROR, "Some problem [occurrences=3]", null, "saved exception") == 1
     }
 
     def "should log an exception from info level"() {
         when:
-            filter.decide(null, aggregatedLogger, Level.INFO, "Some problem", null, new RuntimeException("some exception"))
+            filterLog(Level.INFO, "Some problem", null, new RuntimeException("some exception"))
 
         and:
             filter.report()
 
         then:
-            1 * appender.doAppend(_) >> { LoggingEvent event ->
-                assert event.level == Level.INFO
-                assert event.message == "Some problem [occurrences=1]"
-                assert event.throwableProxy.message == "some exception"
-            }
+            appender.capturedEvents() == 1
+            appender.countCapturedEvents(Level.INFO, "Some problem [occurrences=1]", null, "some exception") == 1
     }
 
     def "should not report when there are no logs"() {
         when:
-            filter.decide(null, aggregatedLogger, Level.ERROR, "Some problem", null, null)
+            filterLog(Level.ERROR, "Some problem")
 
         and:
             filter.report()
 
         then:
-            1 * appender.doAppend(_) >> { LoggingEvent event ->
-                assert event.level == Level.ERROR
-                assert event.message == "Some problem [occurrences=1]"
-            }
+            appender.capturedEvents() == 1
+            appender.countCapturedEvents(Level.ERROR, "Some problem [occurrences=1]") == 1
+            appender.reset()
 
         when:
             filter.report()
 
         then:
-            0 * appender.doAppend(_)
+            appender.capturedEvents() == 0
     }
 
     def "should group logs by full message and use last exception"() {
         when:
-            filter.decide(null, aggregatedLogger, Level.ERROR, "Some problem", (Object[]) [new RuntimeException("problem!")], null)
-            filter.decide(null, aggregatedLogger, Level.ERROR, "Some problem", (Object[]) [new RuntimeException("another problem!")], null)
-            filter.decide(null, aggregatedLogger, Level.ERROR, "An error caused by {}", (Object[]) ["James", new RuntimeException("abort 1!")], null)
-            filter.decide(null, aggregatedLogger, Level.ERROR, "An error caused by {}", (Object[]) ["James"], new RuntimeException("abort 2!"))
-            filter.decide(null, aggregatedLogger, Level.ERROR, "An error caused by {}", (Object[]) ["James"], null)
+            filterLog(Level.ERROR, "Some problem", [new RuntimeException("problem!")])
+            filterLog(Level.ERROR, "Some problem", [new RuntimeException("another problem!")])
+            filterLog(Level.ERROR, "An error caused by {}", ["James", new RuntimeException("abort 1!")])
+            filterLog(Level.ERROR, "An error caused by {}", ["James"], new RuntimeException("abort 2!"))
+            filterLog(Level.ERROR, "An error caused by {}", ["James"])
 
         and:
             filter.report()
 
         then:
-            capturedEvents.size() == 2
-            capturedEvents.count {
-                it.message == "Some problem [occurrences=2]" && it.argumentArray.size() == 0 &&
-                        it.throwableProxy.message == "another problem!"
-            } == 1
-            capturedEvents.count {
-                it.message == "An error caused by {} [occurrences=3]" &&
-                        it.argumentArray[0] == "James" && it.throwableProxy.message == "abort 2!"
-            } == 1
-
+            appender.capturedEvents() == 2
+            appender.countCapturedEvents("Some problem [occurrences=2]", [], "another problem!") == 1
+            appender.countCapturedEvents("An error caused by {} [occurrences=3]", ["James"], "abort 2!") == 1
     }
 
     def "should allow multithreaded access"() {
@@ -274,19 +242,13 @@ class AggregatingTurboFilterTest extends Specification {
             CountDownLatch latch = new CountDownLatch(threadsCount)
             int logsPerThread = 1_000
             ExecutorService executor = Executors.newFixedThreadPool(threadsCount)
-            Appender appender = Mock(Appender)
-            aggregatedLogger.addAppender(appender)
 
         when:
             threadsCount.times {
-                executor.submit(
-                        {
-                            logsPerThread.times {
-                                filter.decide(null, aggregatedLogger, Level.ERROR, "An error", null, null)
-                            }
-                            latch.countDown()
-                        }
-                )
+                executor.submit {
+                    logsPerThread.times { filterLog(Level.ERROR, "An error") }
+                    latch.countDown()
+                }
             }
 
         then:
@@ -296,17 +258,12 @@ class AggregatingTurboFilterTest extends Specification {
             filter.report()
 
         then:
-            1 * appender.doAppend(_) >> { LoggingEvent event ->
-                assert event.message == "An error [occurrences=${threadsCount * logsPerThread}]"
-            }
+            appender.capturedEvents() == 1
+            appender.countCapturedEvents("An error [occurrences=${threadsCount * logsPerThread}]") == 1
     }
 
     def "should allow multithreaded access while reporting simultaneously"() {
         given:
-            AtomicInteger loggerCalls = new AtomicInteger()
-            AtomicInteger count = new AtomicInteger()
-            String countRegexp = /An error \[occurrences\=(\d+)\]/
-
             int threadsCount = 5
             CountDownLatch latch = new CountDownLatch(threadsCount)
             int logsPerThread = 10_000
@@ -315,15 +272,6 @@ class AggregatingTurboFilterTest extends Specification {
             AggregatingTurboFilter filter = createFilter(aggregatedLogger.name)
             filter.setReportingIntervalMillis(10) // small reporting interval
             filter.start()
-
-            Appender appender = [doAppend: { LoggingEvent event ->
-                loggerCalls.incrementAndGet()
-                Matcher matcher = (event.message =~ countRegexp)
-                // we need to parse the number of occurrences
-                assert matcher.matches()
-                count.addAndGet(matcher.group(1) as Integer)
-            }] as Appender
-            aggregatedLogger.addAppender(appender)
 
         when:
             threadsCount.times {
@@ -344,20 +292,28 @@ class AggregatingTurboFilterTest extends Specification {
             filter.report()
 
         then:
-            loggerCalls.get() > 1
-            count.get() == threadsCount * logsPerThread
+            appender.getLoggerCalls() > 1
+            appender.getOccurrences() == threadsCount * logsPerThread
 
         cleanup:
             filter.stop()
     }
 
-    AggregatingTurboFilter createFilter(String loggerName) {
+    private filterLog(Level level, String message, List<Object> params = null, Throwable exception = null) {
+        filterLog(aggregatedLogger, level, message, params, exception)
+    }
+
+    private filterLog(Logger logger, Level level, String message, List<Object> params = null, Throwable exception = null) {
+        filter.decide(null, logger, level, message, params?.toArray(), exception)
+    }
+
+    private AggregatingTurboFilter createFilter(String loggerName) {
         AggregatingTurboFilter filter = new AggregatingTurboFilter()
         filter.addAggregatedLogger(loggerName)
         return filter
     }
 
-    AggregatingTurboFilter createStartedFilter(String loggerName, int reportingInterval) {
+    private AggregatingTurboFilter createStartedFilter(String loggerName, int reportingInterval) {
         AggregatingTurboFilter filter = createFilter(loggerName)
         filter.reportingIntervalMillis = reportingInterval
         filter.start()

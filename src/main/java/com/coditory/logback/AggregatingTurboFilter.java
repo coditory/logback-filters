@@ -50,6 +50,7 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
  * }</pre>
  */
 public class AggregatingTurboFilter extends TurboFilter {
+    private static int filterCounter = -1;
     static final Marker MARKER = MarkerFactory.getMarker("AggregatingTurboFilterMarker");
     private ScheduledExecutorService executorService;
     private String aggregationKey = "message";
@@ -63,7 +64,9 @@ public class AggregatingTurboFilter extends TurboFilter {
     public void start() {
         super.start();
         if (!aggregatedLogger.isEmpty()) {
-            ThreadFactory threadFactory = threadFactoryBuilder("aggregating-filter-thread-%d")
+            filterCounter++;
+            ThreadFactory threadFactory = threadFactoryBuilder("aggregating-filter-" + filterCounter + "-thread-%d")
+                    .withDaemonThreads(true)
                     .build();
             filterClassCounter.increment();
             executorService = Executors.newSingleThreadScheduledExecutor(threadFactory);
@@ -102,10 +105,15 @@ public class AggregatingTurboFilter extends TurboFilter {
     }
 
     @Override
-    public FilterReply decide(Marker marker, Logger logger, Level level, String logMessage, Object[] logParams, Throwable logException) {
-        if (isNeutral(marker, logger, level, logMessage)) {
+    public FilterReply decide(Marker marker, Logger logger, Level level, String message, Object[] params, Throwable exception) {
+        if (isNeutral(marker, logger, level, message)) {
             return FilterReply.NEUTRAL;
         }
+        aggregate(marker, logger, level, message, params, exception);
+        return FilterReply.DENY;
+    }
+
+    public void aggregate(Marker marker, Logger logger, Level level, String logMessage, Object[] logParams, Throwable logException) {
         String message = hasAggregationToken(logMessage)
                 ? removeAggregationToken(logMessage)
                 : logMessage;
@@ -123,7 +131,6 @@ public class AggregatingTurboFilter extends TurboFilter {
                 new AggregateSummary(logException, parameters),
                 (currentAggregate, emptyAggregate) -> currentAggregate.aggregate(exception, parameters)
         );
-        return FilterReply.DENY;
     }
 
     private Throwable extractLastThrowableParam(Object[] params) {
@@ -139,13 +146,16 @@ public class AggregatingTurboFilter extends TurboFilter {
     private boolean isNeutral(Marker marker, Logger logger, Level level, String message) {
         return (logger == null || level == null || message == null)
                 || isAggregatedLog(marker)
-                || (!aggregatedLogger.contains(logger.getName()) && !hasAggregationToken(message));
+                || !aggregatedLogger.contains(logger.getName())
+                || (isAggregationTokenDefined() && !hasAggregationToken(message));
+    }
+
+    private boolean isAggregationTokenDefined() {
+        return aggregationMessageToken != null && !aggregationMessageToken.isEmpty();
     }
 
     private boolean hasAggregationToken(String message) {
-        return aggregationMessageToken != null
-                && !aggregationMessageToken.isEmpty()
-                && message.contains(aggregationMessageToken);
+        return isAggregationTokenDefined() && message.contains(aggregationMessageToken);
     }
 
     private String removeAggregationToken(String message) {

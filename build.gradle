@@ -2,19 +2,10 @@ plugins {
     id 'java-library'
     id 'groovy'
     id 'jacoco'
-    id 'maven-publish'
     id 'com.github.kt3k.coveralls' version '2.10.2'
     id 'com.coditory.build' version '0.1.11'
     id 'io.codearte.nexus-staging' version '0.22.0' apply false
     id 'de.marcphilipp.nexus-publish' version '0.4.0' apply false
-}
-
-publishing {
-    publications {
-        mavenJava(MavenPublication) {
-            from components.java
-        }
-    }
 }
 
 group = 'com.coditory.logback'
