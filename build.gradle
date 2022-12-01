@@ -11,7 +11,7 @@ group = 'com.coditory.logback'
 description = 'Coditory Logback Filters'
 
 dependencies {
-    api 'ch.qos.logback:logback-classic:1.4.4'
+    api 'ch.qos.logback:logback-classic:1.4.5'
     testImplementation 'org.spockframework:spock-core:2.3-groovy-4.0'
 }
 
