@@ -12,7 +12,7 @@ Add to your `build.gradle`:
 
 ```gradle
 dependencies {
-    implementation "com.coditory.logback:logback-filters:0.1.1"
+    implementation "com.coditory.logback:logback-filters:0.1.2"
 }
 ```
 
