@@ -9,6 +9,6 @@ kotlin = "2.3.10"
 kotlin-gradle = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", version.ref = "kotlin" }
 gradle-nexus-publish = { module = "io.github.gradle-nexus:publish-plugin", version = "1.1.0" }
 # dependencies
-logback-classic = { module = "ch.qos.logback:logback-classic", version = "1.5.31" }
+logback-classic = { module = "ch.qos.logback:logback-classic", version = "1.5.32" }
 # test dependencies
 spock-core = { module = "org.spockframework:spock-core", version = "2.4-groovy-5.0" }
